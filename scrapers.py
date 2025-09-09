@@ -1,17 +1,22 @@
 import requests
-from bs4 import BeautifulSoup
 import logging
-from datetime import datetime
 import time
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+# -----------------------
+# Logging
+# -----------------------
+logger = logging.getLogger("scrapers")
+logging.basicConfig(level=logging.DEBUG)
 
-# --- Simple in-memory cache ---
+# -----------------------
+# Cache to reduce repeated API calls
+# -----------------------
 _cache = {}
-CACHE_TTL = 600  # 10 minutes
+CACHE_TTL = 300  # 5 minutes
 
-# --- City ID mappings ---
+# -----------------------
+# City IDs
+# -----------------------
 REDBUS_CITY_IDS = {
     "Chennai": 123,
     "Bangalore": 122,
@@ -31,91 +36,158 @@ ABHIBUS_CITY_IDS = {
     "Namakkal": 1859,
 }
 
-# --- Helper: format date ---
-def format_date(date_str, fmt_out="%d-%b-%Y"):
-    dt_obj = datetime.strptime(date_str, "%d-%m-%Y")
-    return dt_obj.strftime(fmt_out)
-
-# ---- RedBus URL ----
-def format_redbus_url(from_city, to_city, travel_date):
+# -----------------------
+# RedBus API Scraper
+# -----------------------
+def scrape_redbus_fares(from_city, to_city, travel_date):
+    """
+    Fetch RedBus fares using internal JSON API.
+    Returns the cheapest fare or None.
+    """
     from_id = REDBUS_CITY_IDS.get(from_city)
     to_id = REDBUS_CITY_IDS.get(to_city)
     if not from_id or not to_id:
-        logger.warning("City ID missing for RedBus")
+        logger.warning(f"RedBus city ID missing for {from_city} -> {to_city}")
         return None
-    date_str = format_date(travel_date)
-    url = (
-        f"https://www.redbus.in/bus-tickets/{from_city.lower()}-to-{to_city.lower()}?"
-        f"fromCityId={from_id}&fromCityName={from_city}&toCityId={to_id}&toCityName={to_city}"
-        f"&onward={date_str}&doj={date_str}"
-    )
-    print(f"[DEBUG] Accessing RedBus URL: {url}")  # <-- Added print
-    return url
 
-# ---- AbhiBus URL ----
-def format_abhibus_url(from_city, to_city, travel_date):
-    from_id = ABHIBUS_CITY_IDS.get(from_city)
-    to_id = ABHIBUS_CITY_IDS.get(to_city)
-    if not from_id or not to_id:
-        logger.warning("City ID missing for AbhiBus")
-        return None
-    url = f"https://www.abhibus.com/bus_search/{from_city}/{from_id}/{to_city}/{to_id}/{travel_date}/O"
-    print(f"[DEBUG] Accessing AbhiBus URL: {url}")  # <-- Added print
-    return url
+    api_url = "https://www.redbus.in/rpw/api/searchResults"
+    params = {
+        "fromCity": from_id,
+        "toCity": to_id,
+        "DOJ": travel_date,  # dd-MMM-yyyy, e.g., 12-Sep-2025
+        "limit": 10,
+        "offset": 0,
+        "meta": "true",
+        "groupId": 0,
+        "sectionId": 0,
+        "sort": 0,
+        "sortOrder": 0,
+        "from": "initialLoad",
+        "getUuid": True,
+        "bT": 1,
+        "clearLMBFilter": "undefined"
+    }
+    payload = {
+        "appliedFilterCount":0,
+        "onlyShow":[],
+        "dt":[],
+        "SeaterType":[],
+        "AcType":[],
+        "travelsList":[],
+        "amtList":[],
+        "bpList":[],
+        "dpList":[],
+        "CampaignFilter":[],
+        "at":[],
+        "persuasionList":[],
+        "bpIdentifier":[],
+        "dpIdentifier":[],
+        "bcf":[],
+        "opBusTypeFilterList":[],
+        "priceRange":[],
+        "RouteIds":[],
+        "bpKeys":[],
+        "dpKeys":[],
+        "streaksFilter":[],
+        "preRouteFilters": None
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/json",
+        "Origin": "https://www.redbus.in",
+        "Referer": "https://www.redbus.in/bus-tickets/"
+    }
 
-# ---- Scrapers ----
-def scrape_redbus_fares(from_city, to_city, travel_date):
-    url = format_redbus_url(from_city, to_city, travel_date)
-    if not url:
-        return None
     try:
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=35)
+        logger.debug(f"RedBus API request: {params}")
+        response = requests.post(api_url, json=payload, params=params, headers=headers, timeout=15)
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, "lxml")
-        fares = []
-        for price in soup.select(".fare, .fare d-block"):
-            fare_text = price.get_text(strip=True).replace("₹", "").replace(",", "")
-            if fare_text.isdigit():
-                fares.append(int(fare_text))
-        return min(fares) if fares else None
+        data = response.json()
+        results = data.get("results", [])
+        if not results:
+            return None
+        fares = [bus["fare"] for bus in results if "fare" in bus]
+        if not fares:
+            return None
+        return min(fares)
     except Exception as e:
         logger.warning(f"RedBus scraping failed: {e}")
         return None
 
+# -----------------------
+# AbhiBus API Scraper
+# -----------------------
 def scrape_abhibus_fares(from_city, to_city, travel_date):
-    url = format_abhibus_url(from_city, to_city, travel_date)
-    if not url:
+    """
+    Fetch AbhiBus fares using JSON API.
+    Returns the cheapest fare or None.
+    """
+    from_id = ABHIBUS_CITY_IDS.get(from_city)
+    to_id = ABHIBUS_CITY_IDS.get(to_city)
+    if not from_id or not to_id:
+        logger.warning(f"AbhiBus city ID missing for {from_city} -> {to_city}")
         return None
+
+    api_url = "https://www.abhibus.com/wap/GetBusList"
+    payload = {
+        "source": from_city,
+        "sourceid": from_id,
+        "destination": to_city,
+        "destinationid": to_id,
+        "jdate": travel_date,  # dd-mm-yyyy, e.g., 12-09-2025
+        "prd": "mobile",
+        "filters": 1,
+        "isReturnJourney": "0",
+        "api_exp": {
+            "exp_ixigo_payment": "false",
+            "exp_service_cards": "1",
+            "exp_srp_outlier": "no"
+        }
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/json",
+        "Origin": "https://www.abhibus.com",
+        "Referer": "https://www.abhibus.com/bus-tickets"
+    }
+
     try:
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=35)
+        logger.debug(f"AbhiBus API request: {payload}")
+        response = requests.post(api_url, json=payload, headers=headers, timeout=15)
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, "lxml")
-        fares = []
-        for price in soup.select(".bus-fare span, .fare"):
-            fare_text = price.get_text(strip=True).replace("₹", "").replace(",", "")
-            if fare_text.isdigit():
-                fares.append(int(fare_text))
-        return min(fares) if fares else None
+        data = response.json()
+        bus_list = data.get("BusList", [])
+        if not bus_list:
+            return None
+        fares = [bus["Fares"] for bus in bus_list if "Fares" in bus]
+        if not fares:
+            return None
+        return min(fares)
     except Exception as e:
         logger.warning(f"AbhiBus scraping failed: {e}")
         return None
 
-# ---- Unified fetch with caching ----
+# -----------------------
+# Unified Fetch Function
+# -----------------------
 def fetch_bus_fares(from_city, to_city, travel_date):
+    """
+    Returns a dict of bus fares from both RedBus and AbhiBus
+    """
     key = f"{from_city}-{to_city}-{travel_date}"
     now = time.time()
 
-    # Return cached result if valid
     if key in _cache and now - _cache[key]["time"] < CACHE_TTL:
-        logger.info(f"Using cached fares for {key}")
         return _cache[key]["data"]
 
     data = {}
 
+    # RedBus
     redbus_fare = scrape_redbus_fares(from_city, to_city, travel_date)
     if redbus_fare is not None:
         data["RedBus"] = redbus_fare
 
+    # AbhiBus
     abhibus_fare = scrape_abhibus_fares(from_city, to_city, travel_date)
     if abhibus_fare is not None:
         data["AbhiBus"] = abhibus_fare
