@@ -1,8 +1,14 @@
 import os
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from scrapers import fetch_bus_fares   # 👈 Import unified fetch function
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+from scrapers import fetch_bus_fares   # 👈 Unified fetch function
 
 # Enable logging
 logging.basicConfig(
@@ -21,7 +27,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Hi, I’m BusSaver – your smart bus fare comparison assistant!\n\n"
         "Use the command like this:\n"
-        "👉 /compare Chennai Bangalore 15-09-2025"
+        "👉 /compare Chennai Bangalore 10-09-2025"
     )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,7 +49,12 @@ async def compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
         travel_date = context.args[2]
 
         # 🔍 Fetch real fares using scrapers
-        fares = fetch_bus_fares(from_city, to_city, travel_date)
+        try:
+            fares = fetch_bus_fares(from_city, to_city, travel_date)
+        except Exception as e:
+            logger.error(f"Fetcher crashed: {e}", exc_info=True)
+            await update.message.reply_text("❌ Failed to fetch fares. Try again later.")
+            return
 
         if not fares:
             await update.message.reply_text("❌ No fares found. Please try again later.")
@@ -62,7 +73,7 @@ async def compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(result, parse_mode="Markdown")
 
     except Exception as e:
-        logger.error(f"Error in /compare: {e}")
+        logger.error(f"Error in /compare: {e}", exc_info=True)
         await update.message.reply_text("❌ Something went wrong. Please try again.")
 
 # --- Handle free text ---
@@ -75,6 +86,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+# --- Global error handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("⚠️ Exception while handling update:", exc_info=context.error)
+
+    if update and isinstance(update, Update) and update.effective_chat:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⚠️ Sorry, an error occurred. Please try again later."
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify user of error: {e}")
+
 # --- Main app ---
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -84,6 +108,9 @@ def main():
     app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("compare", compare))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Register error handler
+    app.add_error_handler(error_handler)
 
     # Run bot
     logger.info("✅ Bot is running...")
