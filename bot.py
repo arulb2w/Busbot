@@ -35,6 +35,7 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Compare command ---
 async def compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
+     print("📩 /compare received:", context.args)
     try:
         if len(context.args) < 3:
             await update.message.reply_text(
