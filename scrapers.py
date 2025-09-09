@@ -20,7 +20,6 @@ REDBUS_CITY_IDS = {
     "Salem": 602,
     "Ramanathapuram": 80089,
     "Namakkal": 364,
-    # add more cities here
 }
 
 ABHIBUS_CITY_IDS = {
@@ -30,7 +29,6 @@ ABHIBUS_CITY_IDS = {
     "Salem": 868,
     "Erode": 867,
     "Namakkal": 1859,
-    # add more cities here
 }
 
 # --- Helper: format date ---
@@ -51,6 +49,7 @@ def format_redbus_url(from_city, to_city, travel_date):
         f"fromCityId={from_id}&fromCityName={from_city}&toCityId={to_id}&toCityName={to_city}"
         f"&onward={date_str}&doj={date_str}"
     )
+    print(f"[DEBUG] Accessing RedBus URL: {url}")  # <-- Added print
     return url
 
 # ---- AbhiBus URL ----
@@ -61,6 +60,7 @@ def format_abhibus_url(from_city, to_city, travel_date):
         logger.warning("City ID missing for AbhiBus")
         return None
     url = f"https://www.abhibus.com/bus_search/{from_city}/{from_id}/{to_city}/{to_id}/{travel_date}/O"
+    print(f"[DEBUG] Accessing AbhiBus URL: {url}")  # <-- Added print
     return url
 
 # ---- Scrapers ----
