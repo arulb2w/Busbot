@@ -69,7 +69,7 @@ def scrape_redbus_fares(from_city, to_city, travel_date):
     if not url:
         return None
     try:
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=35)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "lxml")
         fares = []
@@ -87,7 +87,7 @@ def scrape_abhibus_fares(from_city, to_city, travel_date):
     if not url:
         return None
     try:
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=35)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "lxml")
         fares = []
