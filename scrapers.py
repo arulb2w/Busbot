@@ -1,12 +1,22 @@
 import requests
 from bs4 import BeautifulSoup
+import logging
+import time
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# --- Simple in-memory cache ---
+_cache = {}
+
+CACHE_TTL = 600  # 10 minutes
 
 # ---- RedBus ----
 def scrape_redbus_fares(from_city, to_city, travel_date):
     try:
         url = f"https://www.redbus.in/bus-tickets/{from_city}-to-{to_city}?onward={travel_date}"
         headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=5)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "lxml")
@@ -19,16 +29,15 @@ def scrape_redbus_fares(from_city, to_city, travel_date):
 
         return min(fares) if fares else None
     except Exception as e:
-        print(f"RedBus scraping error: {e}")
+        logger.warning(f"RedBus scraping failed: {e}")
         return None
-
 
 # ---- AbhiBus ----
 def scrape_abhibus_fares(from_city, to_city, travel_date):
     try:
         url = f"https://www.abhibus.com/bus_search/{from_city}/{to_city}/{travel_date}/0/0"
         headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=5)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "lxml")
@@ -41,16 +50,15 @@ def scrape_abhibus_fares(from_city, to_city, travel_date):
 
         return min(fares) if fares else None
     except Exception as e:
-        print(f"AbhiBus scraping error: {e}")
+        logger.warning(f"AbhiBus scraping failed: {e}")
         return None
-
 
 # ---- MakeMyTrip ----
 def scrape_mmt_fares(from_city, to_city, travel_date):
     try:
         url = f"https://www.makemytrip.com/bus/search/{from_city}/{to_city}/{travel_date}"
         headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=5)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "lxml")
@@ -63,21 +71,35 @@ def scrape_mmt_fares(from_city, to_city, travel_date):
 
         return min(fares) if fares else None
     except Exception as e:
-        print(f"MMT scraping error: {e}")
+        logger.warning(f"MMT scraping failed: {e}")
         return None
 
-
-# ---- Unified Fetch Function ----
+# ---- Unified Fetch Function with caching ----
 def fetch_bus_fares(from_city, to_city, travel_date):
+    key = f"{from_city}-{to_city}-{travel_date}"
+    now = time.time()
+
+    # Return cached result if still valid
+    if key in _cache and now - _cache[key]["time"] < CACHE_TTL:
+        logger.info(f"Using cached fares for {key}")
+        return _cache[key]["data"]
+
     data = {}
 
+    # Scrape each site individually
     redbus_fare = scrape_redbus_fares(from_city, to_city, travel_date)
-    if redbus_fare: data["RedBus"] = redbus_fare
+    if redbus_fare is not None:
+        data["RedBus"] = redbus_fare
 
     abhibus_fare = scrape_abhibus_fares(from_city, to_city, travel_date)
-    if abhibus_fare: data["AbhiBus"] = abhibus_fare
+    if abhibus_fare is not None:
+        data["AbhiBus"] = abhibus_fare
 
     mmt_fare = scrape_mmt_fares(from_city, to_city, travel_date)
-    if mmt_fare: data["MakeMyTrip"] = mmt_fare
+    if mmt_fare is not None:
+        data["MakeMyTrip"] = mmt_fare
+
+    # Save to cache
+    _cache[key] = {"time": now, "data": data}
 
     return data
