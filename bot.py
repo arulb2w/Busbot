@@ -2,6 +2,7 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from scrapers import fetch_bus_fares   # 👈 Import unified fetch function
 
 # Enable logging
 logging.basicConfig(
@@ -41,12 +42,12 @@ async def compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
         to_city = context.args[1].capitalize()
         travel_date = context.args[2]
 
-        # --- Dummy fare data ---
-        fares = {
-            "RedBus": 899,
-            "AbhiBus": 870,
-            "MakeMyTrip": 885
-        }
+        # 🔍 Fetch real fares using scrapers
+        fares = fetch_bus_fares(from_city, to_city, travel_date)
+
+        if not fares:
+            await update.message.reply_text("❌ No fares found. Please try again later.")
+            return
 
         # Find cheapest
         cheapest_app = min(fares, key=fares.get)
