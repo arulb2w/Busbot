@@ -1,101 +1,61 @@
-import requests
 import logging
-import time
-from datetime import datetime
+import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+from scrapers import fetch_bus_fares
 
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
-# --- Simple in-memory cache ---
-_cache = {}
-CACHE_TTL = 600  # 10 minutes
-
-# --- City ID mappings for AbhiBus ---
-ABHIBUS_CITY_IDS = {
-    "Chennai": 6,
-    "Bangalore": 7,
-    "Ramnad": 1970,
-    "Salem": 868,
-    "Erode": 867,
-    "Namakkal": 1859,
-}
-
-# --- Helper: format date ---
-def format_date(date_str, fmt_out="%Y-%m-%d"):
-    dt_obj = datetime.strptime(date_str, "%d-%m-%Y")
-    return dt_obj.strftime(fmt_out)
-
-# --- AbhiBus API POST ---
-def fetch_abhibus_services(from_city, to_city, travel_date):
-    from_id = ABHIBUS_CITY_IDS.get(from_city)
-    to_id = ABHIBUS_CITY_IDS.get(to_city)
-    if not from_id or not to_id:
-        logger.warning("City ID missing for AbhiBus")
-        return None
-
-    payload = {
-        "source": from_city,
-        "sourceid": from_id,
-        "destination": to_city,
-        "destinationid": to_id,
-        "jdate": format_date(travel_date),  # yyyy-mm-dd
-        "prd": "mobile",
-        "filters": 1,
-        "isReturnJourney": "0",
-    }
-
+# --- Command handler ---
+async def buses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        response = requests.post(
-            "https://www.abhibus.com/wap/GetBusList",
-            json=payload,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=35,
-        )
-        logger.info(f"[DEBUG] AbhiBus HTTP status: {response.status_code}")
-        response.raise_for_status()
-        data = response.json()
+        # Allow user input like: /buses Chennai Erode 13-09-2025
+        if len(context.args) >= 3:
+            from_city = context.args[0]
+            to_city = context.args[1]
+            travel_date = context.args[2]
+        else:
+            await update.message.reply_text("⚠️ Usage: /buses <from_city> <to_city> <dd-mm-yyyy>")
+            return
 
-        if data.get("status") != "Success":
-            logger.warning(f"AbhiBus API failed: {data.get('message')}")
-            return None
+        result = fetch_bus_fares(from_city, to_city, travel_date)
 
-        services = []
-        for s in data.get("serviceDetailsList", []):
-            services.append({
-                "operator": s.get("travelerAgentName"),
-                "busType": s.get("busTypeName"),
-                "startTime": s.get("startTime"),
-                "arriveTime": s.get("arriveTime"),
-                "availableSeats": s.get("availableSeats"),
-                "fare": s.get("fare"),
-                "boardingPoints": [bp["placeName"] for bp in s.get("boardingInfoList", [])],
-                "droppingPoints": [dp["placeName"] for dp in s.get("droppingInfoList", [])],
-            })
-        return services
+        if not result or "services" not in result:
+            await update.message.reply_text("⚠️ No buses found.")
+            return
+
+        # Build response
+        response_lines = []
+        for bus in result["services"][:10]:  # show only first 10 buses
+            response_lines.append(
+                f"{bus['operator']} | {bus['busType']} | "
+                f"{bus['startTime']} → {bus['arriveTime']} | "
+                f"Seats: {bus['availableSeats']} | Fare: ₹{bus['fare']}"
+            )
+
+        await update.message.reply_text("\n".join(response_lines))
 
     except Exception as e:
-        logger.warning(f"AbhiBus API fetch failed: {e}")
-        return None
+        logger.error(f"Error fetching buses: {e}")
+        await update.message.reply_text("❌ Something went wrong while fetching bus details.")
 
-# --- Unified fetch with caching ---
-def fetch_bus_fares(from_city, to_city, travel_date):
-    key = f"{from_city.strip().lower()}-{to_city.strip().lower()}-{travel_date}"
-    now = time.time()
+# --- Main entrypoint ---
+def main():
+    # ✅ Use the same token logic as your old bot.py
+    token = os.environ.get("BOT_TOKEN")
+    if not token:
+        raise RuntimeError("BOT_TOKEN environment variable not set!")
 
-    # Return cached result if valid
-    if key in _cache and now - _cache[key]["time"] < CACHE_TTL:
-        logger.info(f"Using cached result for {key}")
-        return _cache[key]["data"]
+    app = Application.builder().token(token).build()
 
-    services = fetch_abhibus_services(from_city, to_city, travel_date)
+    # Register commands
+    app.add_handler(CommandHandler("buses", buses))
 
-    _cache[key] = {"time": now, "data": services}
-    logger.info(f"[DEBUG] Cached services for {key}")
-    return services
+    # Start bot (keeps waiting for user commands)
+    logger.info("🚀 Bot started and waiting for commands...")
+    app.run_polling()
 
-# ---- Example usage ----
 if __name__ == "__main__":
-    buses = fetch_bus_fares("Chennai", "Erode", "13-09-2025")
-    for bus in buses or []:
-        print(f"{bus['operator']} | {bus['busType']} | {bus['startTime']} → {bus['arriveTime']} | "
-              f"Seats: {bus['availableSeats']} | Fare: ₹{bus['fare']}")
+    main()
