@@ -34,8 +34,21 @@ const ABHIBUS_CITY_IDS = {
   Tiruchirappalli: 795,
 };
 
+// --- Helper: Parse "HH:MM AM/PM" to Date ---
+function parseTime(timeStr) {
+  const [time, modifier] = timeStr.split(" ");
+  let [hours, minutes] = time.split(":").map(Number);
+
+  if (modifier === "PM" && hours < 12) hours += 12;
+  if (modifier === "AM" && hours === 12) hours = 0;
+
+  const date = new Date();
+  date.setHours(hours, minutes, 0, 0);
+  return date;
+}
+
 // --- Fetch AbhiBus services ---
-async function fetchAbhiBusServices(fromCity, toCity, travelDate, sortBy = "fare") {
+async function fetchAbhiBusServices(fromCity, toCity, travelDate, sortOrder) {
   const fromId = ABHIBUS_CITY_IDS[fromCity];
   const toId = ABHIBUS_CITY_IDS[toCity];
   if (!fromId || !toId) {
@@ -74,38 +87,30 @@ async function fetchAbhiBusServices(fromCity, toCity, travelDate, sortBy = "fare
       return "❌ No buses found for this route/date.";
     }
 
-    // Sorting
-    if (sortBy === "time") {
-      services = services.sort(
-        (a, b) => new Date(`1970-01-01T${a.startTime}`) - new Date(`1970-01-01T${b.startTime}`)
-      );
-    } else {
-      services = services.sort((a, b) => parseInt(a.fare) - parseInt(b.fare));
+    // --- Sorting ---
+    if (sortOrder === "fare") {
+      services.sort((a, b) => parseFloat(a.fare) - parseFloat(b.fare));
+    } else if (sortOrder === "time") {
+      services.sort((a, b) => parseTime(a.startTime) - parseTime(b.startTime));
     }
 
-    // Limit to top 30
+    // Limit results
     services = services.slice(0, 30);
 
-    // Format messages
-    const messages = [];
-    let currentMessage = `🚌 *Top 30 Bus Services (sorted by ${sortBy})*\n\n`;
-    let counter = 1;
+    // Emoji numbers for 1–10
+    const numberEmojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
 
-    for (const s of services) {
-      const line = `${counter}️⃣ ${s.travelerAgentName} | ${s.busTypeName}\n   ${s.startTime} → ${s.arriveTime} | ${s.availableSeats} seats | ₹${s.fare}\n\n`;
+    // Build response
+    const header = `🚌 Top ${services.length} Bus Services (sorted by ${sortOrder})\n\n`;
+    let message = header;
 
-      if (currentMessage.length + line.length > 3500) {
-        messages.push(currentMessage);
-        currentMessage = "";
-      }
+    services.forEach((s, i) => {
+      const indexNum = i < 10 ? numberEmojis[i] : `${i + 1}.`;
+      message += `${indexNum} ${s.travelerAgentName} | ${s.busTypeName}\n`;
+      message += `${s.startTime} → ${s.arriveTime} | ${s.availableSeats} seats | ₹${s.fare}\n\n`;
+    });
 
-      currentMessage += line;
-      counter++;
-    }
-
-    if (currentMessage) messages.push(currentMessage);
-
-    return messages;
+    return message;
   } catch (err) {
     return `❌ Error fetching buses: ${err.message}`;
   }
@@ -122,21 +127,15 @@ bot.on("message", async (msg) => {
 
   // Expected format: FromCity ToCity DD-MM-YYYY [fare|time]
   const parts = text.split(/\s+/);
-  if (parts.length < 3 || parts.length > 4) {
+  if (parts.length < 3) {
     bot.sendMessage(chatId, "❌ Invalid format. Use:\nFromCity ToCity DD-MM-YYYY [fare|time]");
     return;
   }
 
-  const [fromCity, toCity, travelDate, sortByInput] = parts;
-  const sortBy = sortByInput?.toLowerCase() === "time" ? "time" : "fare";
+  const [fromCity, toCity, travelDate, sortOrderRaw] = parts;
+  const sortOrder = (sortOrderRaw || "fare").toLowerCase();
 
-  const result = await fetchAbhiBusServices(fromCity, toCity, travelDate, sortBy);
+  const result = await fetchAbhiBusServices(fromCity, toCity, travelDate, sortOrder);
 
-  if (Array.isArray(result)) {
-    for (const msgChunk of result) {
-      await bot.sendMessage(chatId, msgChunk, { parse_mode: "Markdown" });
-    }
-  } else {
-    await bot.sendMessage(chatId, result);
-  }
+  await bot.sendMessage(chatId, result);
 });
