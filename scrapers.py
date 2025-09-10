@@ -3,8 +3,12 @@ import logging
 import time
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+# --- Configure logging globally ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:%(name)s:%(message)s"
+)
+logger = logging.getLogger("scrapers")
 
 # --- Simple in-memory cache ---
 _cache = {}
@@ -51,12 +55,12 @@ def fetch_abhibus_services(from_city, to_city, travel_date):
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=35,
         )
-        logger.info(f"[DEBUG] AbhiBus HTTP status: {response.status_code}")
+        logger.debug(f"AbhiBus HTTP status: {response.status_code}")
         response.raise_for_status()
         data = response.json()
 
         if data.get("status") != "Success":
-            logger.warning(f"AbhiBus API failed: {data.get('message')}")
+            logger.error(f"AbhiBus API failed: {data.get('message')}")
             return None
 
         services = []
@@ -74,7 +78,7 @@ def fetch_abhibus_services(from_city, to_city, travel_date):
         return services
 
     except Exception as e:
-        logger.warning(f"AbhiBus API fetch failed: {e}")
+        logger.exception(f"AbhiBus API fetch failed: {e}")
         return None
 
 # --- Unified fetch with caching ---
@@ -90,7 +94,7 @@ def fetch_bus_fares(from_city, to_city, travel_date):
     services = fetch_abhibus_services(from_city, to_city, travel_date)
 
     _cache[key] = {"time": now, "data": services}
-    logger.info(f"[DEBUG] Cached services for {key}")
+    logger.info(f"Cached services for {key}")
     return services
 
 # ---- Example usage ----
