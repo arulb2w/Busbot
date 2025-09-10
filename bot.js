@@ -17,15 +17,25 @@ console.log("✅ Bot is running...");
 // --- City ID mappings for AbhiBus ---
 const ABHIBUS_CITY_IDS = {
   Chennai: 6,
+  Coimbatore: 794,
   Bangalore: 7,
   Ramnad: 1970,
   Salem: 868,
   Erode: 867,
   Namakkal: 1859,
+  Tirupathi: 12,
+  Tiruvannamalai: 3197,
+  Tirupattur: 2127,
+  Madurai: 1016,
+  Polur: 8187,
+  Thirunalveli: 2123,
+  Thiruchendur: 3179,
+  Trichy: 795,
+  Tiruchirappalli: 795,
 };
 
 // --- Fetch AbhiBus services ---
-async function fetchAbhiBusServices(fromCity, toCity, travelDate) {
+async function fetchAbhiBusServices(fromCity, toCity, travelDate, sortBy = "fare") {
   const fromId = ABHIBUS_CITY_IDS[fromCity];
   const toId = ABHIBUS_CITY_IDS[toCity];
   if (!fromId || !toId) {
@@ -64,41 +74,36 @@ async function fetchAbhiBusServices(fromCity, toCity, travelDate) {
       return "❌ No buses found for this route/date.";
     }
 
-    // --- sort by fare and pick top 20 ---
-    services = services.sort((a, b) => a.fare - b.fare).slice(0, 20);
+    // Sorting
+    if (sortBy === "time") {
+      services = services.sort(
+        (a, b) => new Date(`1970-01-01T${a.startTime}`) - new Date(`1970-01-01T${b.startTime}`)
+      );
+    } else {
+      services = services.sort((a, b) => parseInt(a.fare) - parseInt(b.fare));
+    }
 
-    // --- Build Markdown table ---
-    let header = `*Top ${services.length} Cheapest Bus Services*\n`;
-    header += "`Operator             | Type        | Start → Arrive | Seats | Fare`\n";
-    header += "`--------------------|-------------|----------------|-------|-------`\n";
+    // Limit to top 30
+    services = services.slice(0, 30);
 
+    // Format messages
     const messages = [];
-    let currentMessage = header;
+    let currentMessage = `🚌 *Top 30 Bus Services (sorted by ${sortBy})*\n\n`;
+    let counter = 1;
 
     for (const s of services) {
-      const operator =
-        s.travelerAgentName.length > 20
-          ? s.travelerAgentName.substring(0, 17) + "..."
-          : s.travelerAgentName;
-
-      const line =
-        `\`${operator.padEnd(20)}|` +
-        `${s.busTypeName.padEnd(12)}|` +
-        `${s.startTime.padEnd(8)}→${s.arriveTime.padEnd(8)}|` +
-        `${String(s.availableSeats).padEnd(7)}|` +
-        `₹${s.fare}\`\n`;
+      const line = `${counter}️⃣ ${s.travelerAgentName} | ${s.busTypeName}\n   ${s.startTime} → ${s.arriveTime} | ${s.availableSeats} seats | ₹${s.fare}\n\n`;
 
       if (currentMessage.length + line.length > 3500) {
         messages.push(currentMessage);
-        currentMessage = header;
+        currentMessage = "";
       }
 
       currentMessage += line;
+      counter++;
     }
 
-    if (currentMessage.trim() !== "") {
-      messages.push(currentMessage);
-    }
+    if (currentMessage) messages.push(currentMessage);
 
     return messages;
   } catch (err) {
@@ -115,23 +120,21 @@ bot.on("message", async (msg) => {
 
   console.log("📩 Received message:", text);
 
-  // Expected format: FromCity ToCity DD-MM-YYYY
+  // Expected format: FromCity ToCity DD-MM-YYYY [fare|time]
   const parts = text.split(/\s+/);
-  if (parts.length !== 3) {
-    bot.sendMessage(
-      chatId,
-      "❌ Invalid format. Use:\nFromCity ToCity DD-MM-YYYY"
-    );
+  if (parts.length < 3 || parts.length > 4) {
+    bot.sendMessage(chatId, "❌ Invalid format. Use:\nFromCity ToCity DD-MM-YYYY [fare|time]");
     return;
   }
 
-  const [fromCity, toCity, travelDate] = parts;
+  const [fromCity, toCity, travelDate, sortByInput] = parts;
+  const sortBy = sortByInput?.toLowerCase() === "time" ? "time" : "fare";
 
-  const result = await fetchAbhiBusServices(fromCity, toCity, travelDate);
+  const result = await fetchAbhiBusServices(fromCity, toCity, travelDate, sortBy);
 
   if (Array.isArray(result)) {
     for (const msgChunk of result) {
-      await bot.sendMessage(chatId, msgChunk, { parse_mode: "MarkdownV2" });
+      await bot.sendMessage(chatId, msgChunk, { parse_mode: "Markdown" });
     }
   } else {
     await bot.sendMessage(chatId, result);
