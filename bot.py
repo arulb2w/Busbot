@@ -1,60 +1,78 @@
 import logging
+import sys
 import os
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from scrapers import fetch_bus_fares
+from scrapers import fetch_abhibus_services
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# --- Configure logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:%(name)s:%(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("bot")
 
-# --- Command handler ---
-async def buses(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Telegram Bot Token ---
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    print("❌ TELEGRAM_BOT_TOKEN not set in environment variables")
+    raise SystemExit("TELEGRAM_BOT_TOKEN missing!")
+
+# --- /start command ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "👋 Hi! Send me:\n\n`/bus FROM TO DATE`\n\nExample:\n`/bus Chennai Erode 13-09-2025`"
+    print("📨 /start called by", update.effective_user.username)
+    await update.message.reply_text(msg)
+
+# --- /bus command ---
+async def bus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Allow user input like: /buses Chennai Erode 13-09-2025
-        if len(context.args) >= 3:
-            from_city = context.args[0]
-            to_city = context.args[1]
-            travel_date = context.args[2]
-        else:
-            await update.message.reply_text("⚠️ Usage: /buses <from_city> <to_city> <dd-mm-yyyy>")
+        args = context.args
+        if len(args) != 3:
+            msg = "⚠️ Usage: `/bus FROM TO DATE`\nExample: `/bus Chennai Erode 13-09-2025`"
+            print("⚠️ Wrong usage by", update.effective_user.username)
+            await update.message.reply_text(msg, parse_mode="Markdown")
             return
 
-        result = fetch_bus_fares(from_city, to_city, travel_date)
+        from_city, to_city, travel_date = args
+        print(f"📡 Request: {from_city} → {to_city} on {travel_date}")
+        logger.info(f"Fetching buses {from_city} → {to_city} on {travel_date}")
 
-        if not result or "services" not in result:
-            await update.message.reply_text("⚠️ No buses found.")
+        buses = fetch_abhibus_services(from_city, to_city, travel_date)
+
+        if not buses:
+            msg = f"❌ No buses found from {from_city} to {to_city} on {travel_date}"
+            print(msg)
+            await update.message.reply_text(msg)
             return
 
-        # Build response
-        response_lines = []
-        for bus in result["services"][:10]:  # show only first 10 buses
-            response_lines.append(
-                f"{bus['operator']} | {bus['busType']} | "
-                f"{bus['startTime']} → {bus['arriveTime']} | "
-                f"Seats: {bus['availableSeats']} | Fare: ₹{bus['fare']}"
+        reply_lines = []
+        for bus in buses[:10]:  # limit to 10 buses
+            line = (
+                f"🚌 {bus['operator']} ({bus['busType']})\n"
+                f"⏰ {bus['startTime']} → {bus['arriveTime']}\n"
+                f"💺 Seats: {bus['availableSeats']} | 💰 ₹{bus['fare']}\n"
             )
+            reply_lines.append(line)
 
-        await update.message.reply_text("\n".join(response_lines))
+        reply_text = "\n".join(reply_lines)
+        print(f"✅ Sending {len(buses[:10])} buses to user {update.effective_user.username}")
+        await update.message.reply_text(reply_text)
 
     except Exception as e:
-        logger.error(f"Error fetching buses: {e}")
-        await update.message.reply_text("❌ Something went wrong while fetching bus details.")
+        logger.exception("Error in /bus command")
+        print("🔥 Error in /bus:", e)
+        await update.message.reply_text("⚠️ Sorry, something went wrong while fetching buses.")
 
-# --- Main entrypoint ---
+# --- Main entry ---
 def main():
-    # ✅ Use the same token logic as your old bot.py
-    token = os.environ.get("BOT_TOKEN")
-    if not token:
-        raise RuntimeError("BOT_TOKEN environment variable not set!")
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("bus", bus))
 
-    app = Application.builder().token(token).build()
-
-    # Register commands
-    app.add_handler(CommandHandler("buses", buses))
-
-    # Start bot (keeps waiting for user commands)
-    logger.info("🚀 Bot started and waiting for commands...")
+    print("🚀 Bot started!")
     app.run_polling()
 
 if __name__ == "__main__":
