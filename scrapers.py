@@ -1,18 +1,15 @@
 import requests
 import logging
-import time
+import sys
 from datetime import datetime
 
-# --- Configure logging globally ---
+# --- Configure logging to stdout ---
 logging.basicConfig(
     level=logging.INFO,
-    format="%(levelname)s:%(name)s:%(message)s"
+    format="%(levelname)s:%(name)s:%(message)s",
+    stream=sys.stdout
 )
 logger = logging.getLogger("scrapers")
-
-# --- Simple in-memory cache ---
-_cache = {}
-CACHE_TTL = 600  # 10 minutes
 
 # --- City ID mappings for AbhiBus ---
 ABHIBUS_CITY_IDS = {
@@ -26,8 +23,14 @@ ABHIBUS_CITY_IDS = {
 
 # --- Helper: format date ---
 def format_date(date_str, fmt_out="%Y-%m-%d"):
-    dt_obj = datetime.strptime(date_str, "%d-%m-%Y")
-    return dt_obj.strftime(fmt_out)
+    # Supports both dd-mm-yyyy and yyyy-mm-dd
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            dt_obj = datetime.strptime(date_str, fmt)
+            return dt_obj.strftime(fmt_out)
+        except ValueError:
+            continue
+    raise ValueError(f"Date format not supported: {date_str}")
 
 # --- AbhiBus API POST ---
 def fetch_abhibus_services(from_city, to_city, travel_date):
@@ -81,25 +84,9 @@ def fetch_abhibus_services(from_city, to_city, travel_date):
         logger.exception(f"AbhiBus API fetch failed: {e}")
         return None
 
-# --- Unified fetch with caching ---
-def fetch_bus_fares(from_city, to_city, travel_date):
-    key = f"{from_city.strip().lower()}-{to_city.strip().lower()}-{travel_date}"
-    now = time.time()
-
-    # Return cached result if valid
-    if key in _cache and now - _cache[key]["time"] < CACHE_TTL:
-        logger.info(f"Using cached result for {key}")
-        return _cache[key]["data"]
-
-    services = fetch_abhibus_services(from_city, to_city, travel_date)
-
-    _cache[key] = {"time": now, "data": services}
-    logger.info(f"Cached services for {key}")
-    return services
-
 # ---- Example usage ----
 if __name__ == "__main__":
-    buses = fetch_bus_fares("Chennai", "Erode", "13-09-2025")
+    buses = fetch_abhibus_services("Chennai", "Erode", "13-09-2025")
     for bus in buses or []:
         print(f"{bus['operator']} | {bus['busType']} | {bus['startTime']} → {bus['arriveTime']} | "
               f"Seats: {bus['availableSeats']} | Fare: ₹{bus['fare']}")
