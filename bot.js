@@ -1,41 +1,41 @@
-const axios = require('axios');
+// bot.js
 const TelegramBot = require('node-telegram-bot-api');
+const axios = require('axios');
+const moment = require('moment');
 
-// Load token from environment variable
+// Load bot token from environment variable
 const BOT_TOKEN = process.env.BOT_TOKEN;
-
 if (!BOT_TOKEN) {
-    console.error("Error: BOT_TOKEN environment variable not set");
+    console.error("Error: BOT_TOKEN not set in environment variables");
     process.exit(1);
 }
 
-// Create Telegram bot
+// Initialize bot
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// AbhiBus City IDs
+// --- City ID mappings for AbhiBus ---
 const ABHIBUS_CITY_IDS = {
     "Chennai": 6,
     "Bangalore": 7,
     "Ramnad": 1970,
     "Salem": 868,
     "Erode": 867,
-    "Namakkal": 1859
+    "Namakkal": 1859,
 };
 
-// Helper to format date from dd-mm-yyyy → yyyy-mm-dd
+// --- Format date to yyyy-mm-dd ---
 function formatDate(dateStr) {
-    const [dd, mm, yyyy] = dateStr.split("-");
-    return `${yyyy}-${mm}-${dd}`;
+    return moment(dateStr, 'DD-MM-YYYY').format('YYYY-MM-DD');
 }
 
-// Fetch AbhiBus services
+// --- Fetch AbhiBus services ---
 async function fetchAbhibusServices(fromCity, toCity, travelDate) {
     const fromId = ABHIBUS_CITY_IDS[fromCity];
     const toId = ABHIBUS_CITY_IDS[toCity];
 
     if (!fromId || !toId) {
         console.warn("City ID missing for AbhiBus");
-        return [];
+        return null;
     }
 
     const payload = {
@@ -46,7 +46,7 @@ async function fetchAbhibusServices(fromCity, toCity, travelDate) {
         jdate: formatDate(travelDate),
         prd: "mobile",
         filters: 1,
-        isReturnJourney: "0"
+        isReturnJourney: "0",
     };
 
     try {
@@ -55,14 +55,12 @@ async function fetchAbhibusServices(fromCity, toCity, travelDate) {
             payload,
             { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 35000 }
         );
-
-        console.log(`[DEBUG] AbhiBus HTTP status: ${response.status}`);
+        console.info(`[DEBUG] AbhiBus HTTP status: ${response.status}`);
 
         const data = response.data;
-
         if (data.status !== "Success") {
             console.warn(`AbhiBus API failed: ${data.message}`);
-            return [];
+            return null;
         }
 
         const services = data.serviceDetailsList.map(s => ({
@@ -73,45 +71,65 @@ async function fetchAbhibusServices(fromCity, toCity, travelDate) {
             availableSeats: s.availableSeats,
             fare: s.fare,
             boardingPoints: s.boardingInfoList.map(bp => bp.placeName),
-            droppingPoints: s.droppingInfoList.map(dp => dp.placeName)
+            droppingPoints: s.droppingInfoList.map(dp => dp.placeName),
         }));
 
         return services;
 
-    } catch (err) {
-        console.error(`Error fetching AbhiBus: ${err.message}`);
-        return [];
+    } catch (error) {
+        console.warn(`AbhiBus API fetch failed: ${error}`);
+        return null;
     }
 }
 
-// Handle Telegram messages
+// --- Split long messages ---
+function chunkMessage(text, maxLength = 4000) {
+    const chunks = [];
+    let start = 0;
+    while (start < text.length) {
+        chunks.push(text.slice(start, start + maxLength));
+        start += maxLength;
+    }
+    return chunks;
+}
+
+// --- Handle Telegram messages ---
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const text = msg.text;
+    const text = msg.text?.trim();
 
-    console.log(`Received message: ${text}`);
+    if (!text) return;
 
-    // Expecting format: from-to-date (e.g., Chennai-Erode-13-09-2025)
-    const match = text.match(/^(\w+)-(\w+)-(\d{2}-\d{2}-\d{4})$/);
-    if (!match) {
-        bot.sendMessage(chatId, "Invalid format. Use: FromCity-ToCity-dd-mm-yyyy\nExample: Chennai-Erode-13-09-2025");
+    console.info(`Received message: ${text}`);
+
+    // Expected format: Chennai-Erode-14-09-2025
+    const parts = text.split("-");
+    if (parts.length !== 3) {
+        bot.sendMessage(chatId, "Invalid format. Use: FromCity-ToCity-DD-MM-YYYY");
         return;
     }
 
-    const [, fromCity, toCity, travelDate] = match;
+    const [fromCity, toCity, travelDate] = parts;
 
-    bot.sendMessage(chatId, `Fetching buses from ${fromCity} → ${toCity} on ${travelDate}...`);
+    try {
+        const buses = await fetchAbhibusServices(fromCity, toCity, travelDate);
+        if (!buses || buses.length === 0) {
+            bot.sendMessage(chatId, "No buses found for this route/date.");
+            return;
+        }
 
-    const services = await fetchAbhibusServices(fromCity, toCity, travelDate);
+        let messageText = "";
+        for (const bus of buses) {
+            messageText += `${bus.operator} | ${bus.busType} | ${bus.startTime} → ${bus.arriveTime} | Seats: ${bus.availableSeats} | Fare: ₹${bus.fare}\n`;
+        }
 
-    if (services.length === 0) {
-        bot.sendMessage(chatId, "No services found or API failed.");
-        return;
+        const messages = chunkMessage(messageText);
+        for (const chunk of messages) {
+            await bot.sendMessage(chatId, chunk);
+        }
+
+    } catch (error) {
+        console.error(`Error fetching buses: ${error}`);
+        bot.sendMessage(chatId, "Error fetching buses. Please try again later.");
     }
-
-    const reply = services.map(bus =>
-        `${bus.operator} | ${bus.busType} | ${bus.startTime} → ${bus.arriveTime} | Seats: ${bus.availableSeats} | Fare: ₹${bus.fare}`
-    ).join("\n\n");
-
-    bot.sendMessage(chatId, reply);
 });
