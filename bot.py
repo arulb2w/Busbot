@@ -1,121 +1,101 @@
-import os
+import requests
 import logging
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-from scrapers import fetch_bus_fares   # 👈 Unified fetch function
+import time
+from datetime import datetime
 
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-# Load Bot Token from environment variable
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN environment variable is missing!")
+# --- Simple in-memory cache ---
+_cache = {}
+CACHE_TTL = 600  # 10 minutes
 
-# --- Commands ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Hi, I’m BusSaver – your smart bus fare comparison assistant!\n\n"
-        "Use the command like this:\n"
-        "👉 /compare Chennai Bangalore 10-09-2025"
-    )
+# --- City ID mappings for AbhiBus ---
+ABHIBUS_CITY_IDS = {
+    "Chennai": 6,
+    "Bangalore": 7,
+    "Ramnad": 1970,
+    "Salem": 868,
+    "Erode": 867,
+    "Namakkal": 1859,
+}
 
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 Pong! The bot is alive.")
+# --- Helper: format date ---
+def format_date(date_str, fmt_out="%Y-%m-%d"):
+    dt_obj = datetime.strptime(date_str, "%d-%m-%Y")
+    return dt_obj.strftime(fmt_out)
 
-# --- Compare command ---
-async def compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("📩 /compare received:", context.args)
+# --- AbhiBus API POST ---
+def fetch_abhibus_services(from_city, to_city, travel_date):
+    from_id = ABHIBUS_CITY_IDS.get(from_city)
+    to_id = ABHIBUS_CITY_IDS.get(to_city)
+    if not from_id or not to_id:
+        logger.warning("City ID missing for AbhiBus")
+        return None
+
+    payload = {
+        "source": from_city,
+        "sourceid": from_id,
+        "destination": to_city,
+        "destinationid": to_id,
+        "jdate": format_date(travel_date),  # yyyy-mm-dd
+        "prd": "mobile",
+        "filters": 1,
+        "isReturnJourney": "0",
+    }
+
     try:
-        if len(context.args) < 3:
-            await update.message.reply_text(
-                "⚠️ Please use the format:\n"
-                "`/compare <from_city> <to_city> <dd-mm-yyyy>`",
-                parse_mode="Markdown"
-            )
-            return
+        response = requests.post(
+            "https://www.abhibus.com/wap/GetBusList",
+            json=payload,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=35,
+        )
+        logger.info(f"[DEBUG] AbhiBus HTTP status: {response.status_code}")
+        response.raise_for_status()
+        data = response.json()
 
-        from_city = context.args[0].capitalize()
-        to_city = context.args[1].capitalize()
-        travel_date = context.args[2]
+        if data.get("status") != "Success":
+            logger.warning(f"AbhiBus API failed: {data.get('message')}")
+            return None
 
-        # 🔍 Fetch real fares using scrapers
-        try:
-            fares = fetch_bus_fares(from_city, to_city, travel_date)
-        except Exception as e:
-            logger.error(f"Fetcher crashed: {e}", exc_info=True)
-            await update.message.reply_text("❌ Failed to fetch fares. Try again later.")
-            return
-
-        if not fares:
-            await update.message.reply_text("❌ No fares found. Please try again later.")
-            return
-
-        # Find cheapest
-        cheapest_app = min(fares, key=fares.get)
-        cheapest_price = fares[cheapest_app]
-
-        # Format response
-        result = f"🚌 *Fare Comparison*\nRoute: {from_city} → {to_city}\nDate: {travel_date}\n\n"
-        for app, price in fares.items():
-            result += f"🔹 {app}: ₹{price}\n"
-        result += f"\n💡 Best Deal → *{cheapest_app}* (₹{cheapest_price})"
-
-        await update.message.reply_text(result, parse_mode="Markdown")
+        services = []
+        for s in data.get("serviceDetailsList", []):
+            services.append({
+                "operator": s.get("travelerAgentName"),
+                "busType": s.get("busTypeName"),
+                "startTime": s.get("startTime"),
+                "arriveTime": s.get("arriveTime"),
+                "availableSeats": s.get("availableSeats"),
+                "fare": s.get("fare"),
+                "boardingPoints": [bp["placeName"] for bp in s.get("boardingInfoList", [])],
+                "droppingPoints": [dp["placeName"] for dp in s.get("droppingInfoList", [])],
+            })
+        return services
 
     except Exception as e:
-        logger.error(f"Error in /compare: {e}", exc_info=True)
-        await update.message.reply_text("❌ Something went wrong. Please try again.")
+        logger.warning(f"AbhiBus API fetch failed: {e}")
+        return None
 
-# --- Handle free text ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    logger.info(f"User said: {user_text}")
-    await update.message.reply_text(
-        "ℹ️ Use /compare instead, e.g.:\n"
-        "`/compare Chennai Bangalore 15-09-2025`",
-        parse_mode="Markdown"
-    )
+# --- Unified fetch with caching ---
+def fetch_bus_fares(from_city, to_city, travel_date):
+    key = f"{from_city.strip().lower()}-{to_city.strip().lower()}-{travel_date}"
+    now = time.time()
 
-# --- Global error handler ---
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("⚠️ Exception while handling update:", exc_info=context.error)
+    # Return cached result if valid
+    if key in _cache and now - _cache[key]["time"] < CACHE_TTL:
+        logger.info(f"Using cached result for {key}")
+        return _cache[key]["data"]
 
-    if update and isinstance(update, Update) and update.effective_chat:
-        try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="⚠️ Sorry, an error occurred. Please try again later."
-            )
-        except Exception as e:
-            logger.error(f"Failed to notify user of error: {e}")
+    services = fetch_abhibus_services(from_city, to_city, travel_date)
 
-# --- Main app ---
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    _cache[key] = {"time": now, "data": services}
+    logger.info(f"[DEBUG] Cached services for {key}")
+    return services
 
-    # Register handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ping", ping))
-    app.add_handler(CommandHandler("compare", compare))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Register error handler
-    app.add_error_handler(error_handler)
-
-    # Run bot
-    logger.info("✅ Bot is running...")
-    app.run_polling()
-
+# ---- Example usage ----
 if __name__ == "__main__":
-    main()
+    buses = fetch_bus_fares("Chennai", "Erode", "13-09-2025")
+    for bus in buses or []:
+        print(f"{bus['operator']} | {bus['busType']} | {bus['startTime']} → {bus['arriveTime']} | "
+              f"Seats: {bus['availableSeats']} | Fare: ₹{bus['fare']}")
