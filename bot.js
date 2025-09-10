@@ -11,7 +11,6 @@ if (!BOT_TOKEN) {
 }
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-
 console.log("✅ Bot is running...");
 
 // --- City ID mappings for AbhiBus ---
@@ -34,25 +33,30 @@ const ABHIBUS_CITY_IDS = {
   Tiruchirappalli: 795,
 };
 
-// --- Helper: Parse "HH:MM AM/PM" to Date ---
+// --- Helper: convert "dd-mm-yyyy" → "yyyy-mm-dd" ---
+function formatDate(dateStr) {
+  const [dd, mm, yyyy] = dateStr.split("-");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+// --- Parse time "hh:mm AM/PM" into minutes since midnight ---
 function parseTime(timeStr) {
+  if (!timeStr) return Number.MAX_SAFE_INTEGER;
   const [time, modifier] = timeStr.split(" ");
   let [hours, minutes] = time.split(":").map(Number);
 
   if (modifier === "PM" && hours < 12) hours += 12;
   if (modifier === "AM" && hours === 12) hours = 0;
 
-  const date = new Date();
-  date.setHours(hours, minutes, 0, 0);
-  return date;
+  return hours * 60 + minutes;
 }
 
 // --- Fetch AbhiBus services ---
-async function fetchAbhiBusServices(fromCity, toCity, travelDate, sortOrder) {
+async function fetchAbhiBusServices(fromCity, toCity, travelDate, sortOrder = "fare") {
   const fromId = ABHIBUS_CITY_IDS[fromCity];
   const toId = ABHIBUS_CITY_IDS[toCity];
   if (!fromId || !toId) {
-    return `⚠️ City not found in mapping: ${fromCity} or ${toCity}`;
+    return [`⚠️ City not found in mapping: ${fromCity} or ${toCity}`];
   }
 
   const payload = {
@@ -60,7 +64,7 @@ async function fetchAbhiBusServices(fromCity, toCity, travelDate, sortOrder) {
     sourceid: fromId,
     destination: toCity,
     destinationid: toId,
-    jdate: travelDate.split("-").reverse().join("-"), // dd-mm-yyyy → yyyy-mm-dd
+    jdate: formatDate(travelDate), // yyyy-mm-dd
     prd: "mobile",
     filters: 1,
     isReturnJourney: "0",
@@ -74,45 +78,51 @@ async function fetchAbhiBusServices(fromCity, toCity, travelDate, sortOrder) {
     });
 
     if (!response.ok) {
-      return `⚠️ AbhiBus API failed with status: ${response.status}`;
+      return [`⚠️ AbhiBus API failed with status: ${response.status}`];
     }
 
     const data = await response.json();
     if (data.status !== "Success") {
-      return `⚠️ AbhiBus error: ${data.message}`;
+      return [`⚠️ AbhiBus error: ${data.message}`];
     }
 
     let services = data.serviceDetailsList || [];
     if (services.length === 0) {
-      return "❌ No buses found for this route/date.";
+      return ["❌ No buses found for this route/date."];
     }
 
-    // --- Sorting ---
+    // --- Sorting logic ---
     if (sortOrder === "fare") {
-      services.sort((a, b) => parseFloat(a.fare) - parseFloat(b.fare));
+      services.sort((a, b) => (a.fare || 0) - (b.fare || 0));
     } else if (sortOrder === "time") {
       services.sort((a, b) => parseTime(a.startTime) - parseTime(b.startTime));
     }
 
-    // Limit results
+    // --- Limit results (max 30) ---
     services = services.slice(0, 30);
 
-    // Emoji numbers for 1–10
-    const numberEmojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
+    // --- Build formatted message ---
+    const messages = [];
+    let currentMessage = `🚌 Top ${services.length} Bus Services (sorted by ${sortOrder})\n\n`;
 
-    // Build response
-    const header = `🚌 Top ${services.length} Bus Services (sorted by ${sortOrder})\n\n`;
-    let message = header;
+    services.forEach((s, idx) => {
+      const fareStr = s.fare ? s.fare.toString().replace(".00", "") : "N/A";
+      const line =
+        `${idx + 1}) <b>${s.travelerAgentName}</b> | ${s.busTypeName}\n` +
+        `${s.startTime} → ${s.arriveTime} | ${s.availableSeats} seats | <b>₹${fareStr}</b>\n\n`;
 
-    services.forEach((s, i) => {
-      const indexNum = i < 10 ? numberEmojis[i] : `${i + 1}.`;
-      message += `${indexNum} ${s.travelerAgentName} | ${s.busTypeName}\n`;
-      message += `${s.startTime} → ${s.arriveTime} | ${s.availableSeats} seats | ₹${s.fare}\n\n`;
+      if (currentMessage.length + line.length > 3500) {
+        messages.push(currentMessage);
+        currentMessage = "";
+      }
+      currentMessage += line;
     });
 
-    return message;
+    if (currentMessage) messages.push(currentMessage);
+
+    return messages;
   } catch (err) {
-    return `❌ Error fetching buses: ${err.message}`;
+    return [`❌ Error fetching buses: ${err.message}`];
   }
 }
 
@@ -122,20 +132,20 @@ bot.on("message", async (msg) => {
   const text = msg.text?.trim();
 
   if (!text) return;
-
   console.log("📩 Received message:", text);
 
-  // Expected format: FromCity ToCity DD-MM-YYYY [fare|time]
+  // Format: FromCity ToCity DD-MM-YYYY [fare|time]
   const parts = text.split(/\s+/);
   if (parts.length < 3) {
     bot.sendMessage(chatId, "❌ Invalid format. Use:\nFromCity ToCity DD-MM-YYYY [fare|time]");
     return;
   }
 
-  const [fromCity, toCity, travelDate, sortOrderRaw] = parts;
-  const sortOrder = (sortOrderRaw || "fare").toLowerCase();
+  const [fromCity, toCity, travelDate, sortOrder = "fare"] = parts;
 
-  const result = await fetchAbhiBusServices(fromCity, toCity, travelDate, sortOrder);
+  const result = await fetchAbhiBusServices(fromCity, toCity, travelDate, sortOrder.toLowerCase());
 
-  await bot.sendMessage(chatId, result);
+  for (const msgChunk of result) {
+    await bot.sendMessage(chatId, msgChunk, { parse_mode: "HTML" });
+  }
 });
