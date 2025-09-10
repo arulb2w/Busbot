@@ -1,79 +1,117 @@
-import logging
-import sys
-import os
-import asyncio
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from scrapers import fetch_abhibus_services
+const axios = require('axios');
+const TelegramBot = require('node-telegram-bot-api');
 
-# --- Configure logging ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s:%(name)s:%(message)s",
-    stream=sys.stdout,
-)
-logger = logging.getLogger("bot")
+// Load token from environment variable
+const BOT_TOKEN = process.env.BOT_TOKEN;
 
-# --- Telegram Bot Token ---
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    print("❌ TELEGRAM_BOT_TOKEN not set in environment variables")
-    raise SystemExit("TELEGRAM_BOT_TOKEN missing!")
+if (!BOT_TOKEN) {
+    console.error("Error: BOT_TOKEN environment variable not set");
+    process.exit(1);
+}
 
-# --- /start command ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "👋 Hi! Send me:\n\n`/bus FROM TO DATE`\n\nExample:\n`/bus Chennai Erode 13-09-2025`"
-    print("📨 /start called by", update.effective_user.username)
-    await update.message.reply_text(msg)
+// Create Telegram bot
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-# --- /bus command ---
-async def bus(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        args = context.args
-        if len(args) != 3:
-            msg = "⚠️ Usage: `/bus FROM TO DATE`\nExample: `/bus Chennai Erode 13-09-2025`"
-            print("⚠️ Wrong usage by", update.effective_user.username)
-            await update.message.reply_text(msg, parse_mode="Markdown")
-            return
+// AbhiBus City IDs
+const ABHIBUS_CITY_IDS = {
+    "Chennai": 6,
+    "Bangalore": 7,
+    "Ramnad": 1970,
+    "Salem": 868,
+    "Erode": 867,
+    "Namakkal": 1859
+};
 
-        from_city, to_city, travel_date = args
-        print(f"📡 Request: {from_city} → {to_city} on {travel_date}")
-        logger.info(f"Fetching buses {from_city} → {to_city} on {travel_date}")
+// Helper to format date from dd-mm-yyyy → yyyy-mm-dd
+function formatDate(dateStr) {
+    const [dd, mm, yyyy] = dateStr.split("-");
+    return `${yyyy}-${mm}-${dd}`;
+}
 
-        buses = fetch_abhibus_services(from_city, to_city, travel_date)
+// Fetch AbhiBus services
+async function fetchAbhibusServices(fromCity, toCity, travelDate) {
+    const fromId = ABHIBUS_CITY_IDS[fromCity];
+    const toId = ABHIBUS_CITY_IDS[toCity];
 
-        if not buses:
-            msg = f"❌ No buses found from {from_city} to {to_city} on {travel_date}"
-            print(msg)
-            await update.message.reply_text(msg)
-            return
+    if (!fromId || !toId) {
+        console.warn("City ID missing for AbhiBus");
+        return [];
+    }
 
-        reply_lines = []
-        for bus in buses[:10]:  # limit to 10 buses
-            line = (
-                f"🚌 {bus['operator']} ({bus['busType']})\n"
-                f"⏰ {bus['startTime']} → {bus['arriveTime']}\n"
-                f"💺 Seats: {bus['availableSeats']} | 💰 ₹{bus['fare']}\n"
-            )
-            reply_lines.append(line)
+    const payload = {
+        source: fromCity,
+        sourceid: fromId,
+        destination: toCity,
+        destinationid: toId,
+        jdate: formatDate(travelDate),
+        prd: "mobile",
+        filters: 1,
+        isReturnJourney: "0"
+    };
 
-        reply_text = "\n".join(reply_lines)
-        print(f"✅ Sending {len(buses[:10])} buses to user {update.effective_user.username}")
-        await update.message.reply_text(reply_text)
+    try {
+        const response = await axios.post(
+            "https://www.abhibus.com/wap/GetBusList",
+            payload,
+            { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 35000 }
+        );
 
-    except Exception as e:
-        logger.exception("Error in /bus command")
-        print("🔥 Error in /bus:", e)
-        await update.message.reply_text("⚠️ Sorry, something went wrong while fetching buses.")
+        console.log(`[DEBUG] AbhiBus HTTP status: ${response.status}`);
 
-# --- Main entry ---
-def main():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("bus", bus))
+        const data = response.data;
 
-    print("🚀 Bot started!")
-    app.run_polling()
+        if (data.status !== "Success") {
+            console.warn(`AbhiBus API failed: ${data.message}`);
+            return [];
+        }
 
-if __name__ == "__main__":
-    main()
+        const services = data.serviceDetailsList.map(s => ({
+            operator: s.travelerAgentName,
+            busType: s.busTypeName,
+            startTime: s.startTime,
+            arriveTime: s.arriveTime,
+            availableSeats: s.availableSeats,
+            fare: s.fare,
+            boardingPoints: s.boardingInfoList.map(bp => bp.placeName),
+            droppingPoints: s.droppingInfoList.map(dp => dp.placeName)
+        }));
+
+        return services;
+
+    } catch (err) {
+        console.error(`Error fetching AbhiBus: ${err.message}`);
+        return [];
+    }
+}
+
+// Handle Telegram messages
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text;
+
+    console.log(`Received message: ${text}`);
+
+    // Expecting format: from-to-date (e.g., Chennai-Erode-13-09-2025)
+    const match = text.match(/^(\w+)-(\w+)-(\d{2}-\d{2}-\d{4})$/);
+    if (!match) {
+        bot.sendMessage(chatId, "Invalid format. Use: FromCity-ToCity-dd-mm-yyyy\nExample: Chennai-Erode-13-09-2025");
+        return;
+    }
+
+    const [, fromCity, toCity, travelDate] = match;
+
+    bot.sendMessage(chatId, `Fetching buses from ${fromCity} → ${toCity} on ${travelDate}...`);
+
+    const services = await fetchAbhibusServices(fromCity, toCity, travelDate);
+
+    if (services.length === 0) {
+        bot.sendMessage(chatId, "No services found or API failed.");
+        return;
+    }
+
+    const reply = services.map(bus =>
+        `${bus.operator} | ${bus.busType} | ${bus.startTime} → ${bus.arriveTime} | Seats: ${bus.availableSeats} | Fare: ₹${bus.fare}`
+    ).join("\n\n");
+
+    bot.sendMessage(chatId, reply);
+});
