@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Bus Info</title>
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+  <h2>Find Buses</h2>
+  <input id="from" placeholder="From City">
+  <input id="to" placeholder="To City">
+  <input id="date" type="date">
+  <button id="search">Search</button>
+
+  <pre id="output"></pre>
+
+  <script>
+    $("#search").click(function() {
+      const from = $("#from").val();
+      const to = $("#to").val();
+      const date = $("#date").val();
+
+      $.get("https://your-railway-app-url.up.railway.app/businfo", { from, to, date }, function(data) {
+        $("#output").text(JSON.stringify(data, null, 2));
+      });
+    });
+  </script>
+</body>
+</html>
