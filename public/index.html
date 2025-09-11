@@ -19,7 +19,7 @@
       const to = $("#to").val();
       const date = $("#date").val();
 
-      $.get("https://your-railway-app-url.up.railway.app/businfo", { from, to, date }, function(data) {
+      $.get("https://busbot-production-8d2d.up.railway.app/businfo", { from, to, date }, function(data) {
         $("#output").text(JSON.stringify(data, null, 2));
       });
     });
